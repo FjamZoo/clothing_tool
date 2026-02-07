@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# User data — game assets & output
+stream/
+base_game/
+output/
+data/
+*.log
+NUL
+
+# GUI build artifacts
+gui/node_modules/
+gui/dist/
+gui/build/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
