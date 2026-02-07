@@ -169,9 +169,36 @@ _BASE_GAME_DIR_RE = re.compile(
     r'mp_(?P<gchar>[fm])_freemode_01(?:_(?P<suffix>.+))?$'
 )
 
-# Legacy hardcoded overrides — canonical casing is now loaded from
-# data/*.json at runtime (see scanner._load_collection_casing).
-_BASE_GAME_NAME_OVERRIDES: dict[str, str] = {}
+# Canonical GTA V base game collection names (lowercase suffix → correct casing).
+# These are case-sensitive identifiers that FiveM expects exactly as listed.
+_BASE_GAME_NAME_OVERRIDES: dict[str, str] = {
+    "female_apt01": "Female_Apt01",
+    "female_heist": "Female_Heist",
+    "female_freemode_halloween": "Female_freemode_Halloween",
+    "female_freemode_pilot": "Female_freemode_Pilot",
+    "female_freemode_beach": "Female_freemode_beach",
+    "female_freemode_business": "Female_freemode_business",
+    "female_freemode_business2": "Female_freemode_business2",
+    "female_freemode_hipster": "Female_freemode_hipster",
+    "female_freemode_independence": "Female_freemode_independence",
+    "female_freemode_mplts": "Female_freemode_mpLTS",
+    "female_freemode_valentines": "Female_freemode_valentines",
+    "female_xmas": "Female_xmas",
+    "female_xmas2": "Female_xmas2",
+    "male_apt01": "Male_Apt01",
+    "male_heist": "Male_Heist",
+    "male_freemode_halloween": "Male_freemode_Halloween",
+    "male_freemode_pilot": "Male_freemode_Pilot",
+    "male_freemode_beach": "Male_freemode_beach",
+    "male_freemode_business": "Male_freemode_business",
+    "male_freemode_business2": "Male_freemode_business2",
+    "male_freemode_hipster": "Male_freemode_hipster",
+    "male_freemode_independence": "Male_freemode_independence",
+    "male_freemode_mplts": "Male_freemode_mpLTS",
+    "male_freemode_valentines": "Male_freemode_valentines",
+    "male_xmas": "Male_xmas",
+    "male_xmas2": "Male_xmas2",
+}
 
 
 def _derive_base_game_info(file_path: str) -> tuple[str, str]:
@@ -202,11 +229,12 @@ def _derive_base_game_info(file_path: str) -> tuple[str, str]:
                 if suffix.startswith("p_"):
                     suffix = suffix[2:]
 
-                # Check hardcoded overrides first
-                if suffix in _BASE_GAME_NAME_OVERRIDES:
-                    dlc_name = _BASE_GAME_NAME_OVERRIDES[suffix]
-                # mp_ prefixed names stay lowercase; others capitalize first letter
-                elif suffix.startswith("mp_"):
+                # Check canonical GTA V names first (case-insensitive)
+                lower = suffix.lower()
+                if lower in _BASE_GAME_NAME_OVERRIDES:
+                    dlc_name = _BASE_GAME_NAME_OVERRIDES[lower]
+                # mp_ prefixed names stay as-is
+                elif lower.startswith("mp_"):
                     dlc_name = suffix
                 else:
                     dlc_name = suffix[0].upper() + suffix[1:]

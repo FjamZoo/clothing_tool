@@ -127,9 +127,10 @@ def main() -> None:
         "--base-game",
         help="Path to base game directory (e.g. ./base_game)",
     )
+    _default_data = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     parser.add_argument(
-        "--data", default="./data",
-        help="Path to data directory with clothing.json/props.json for collection name casing (default: ./data)",
+        "--data", default=_default_data,
+        help="Path to data directory with clothing.json/props.json for collection name casing",
     )
     parser.add_argument(
         "--log-level", default="WARNING",
