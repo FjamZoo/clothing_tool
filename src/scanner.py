@@ -185,6 +185,92 @@ def _discover_tattoo_files(input_dir: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Custom ped full-body discovery
+# ---------------------------------------------------------------------------
+
+_REQUIRED_BODY_CATEGORIES = ("head", "uppr", "lowr", "feet", "hand")
+_OPTIONAL_BODY_CATEGORIES = ("hair", "accs", "teef", "berd", "decl")
+
+
+def discover_custom_peds(input_dir: str) -> list[dict]:
+    """Find custom ped directories that contain a .yft skeleton.
+
+    Returns a list of dicts, each describing one custom ped:
+        {
+            "model": "strafe",
+            "yft_path": "/abs/path/strafe.yft",
+            "ped_dir": "/abs/path/[strafe]/",
+            "body_parts": {
+                "head": {"ydd_path": "...", "ytd_path": "..."},
+                "uppr": {"ydd_path": "...", "ytd_path": "..."},
+                ...
+            },
+            "output_rel": "strafe/preview.webp",
+        }
+    """
+    peds = []
+
+    for dirpath, dirnames, filenames in os.walk(input_dir):
+        dirnames[:] = [d for d in dirnames if d.lower() != "[replacements]"]
+
+        # Look for .yft files — each one defines a custom ped
+        yft_files = [f for f in filenames if f.lower().endswith(".yft")]
+        if not yft_files:
+            continue
+
+        for yft_name in yft_files:
+            model = os.path.splitext(yft_name)[0]  # "strafe"
+            yft_path = os.path.join(dirpath, yft_name)
+
+            # Find default body part YDDs (drawable 000) and their textures
+            body_parts: dict[str, dict] = {}
+            all_cats = _REQUIRED_BODY_CATEGORIES + _OPTIONAL_BODY_CATEGORIES
+
+            for cat in all_cats:
+                # YDD: {model}^{cat}_000_u.ydd
+                ydd_name = f"{model}^{cat}_000_u.ydd"
+                ydd_path = os.path.join(dirpath, ydd_name)
+
+                # YTD: {model}^{cat}_diff_000_a_uni.ytd (try _uni first, then plain _a)
+                ytd_candidates = [
+                    f"{model}^{cat}_diff_000_a_uni.ytd",
+                    f"{model}^{cat}_diff_000_a.ytd",
+                ]
+                ytd_path = None
+                for ytd_cand in ytd_candidates:
+                    candidate = os.path.join(dirpath, ytd_cand)
+                    if os.path.isfile(candidate):
+                        ytd_path = candidate
+                        break
+                # Also try ethnicity suffixes (_whi, _bla, etc.)
+                if ytd_path is None:
+                    for suffix in ("whi", "bla", "lat", "chi", "pak", "ara"):
+                        candidate = os.path.join(
+                            dirpath, f"{model}^{cat}_diff_000_a_{suffix}.ytd"
+                        )
+                        if os.path.isfile(candidate):
+                            ytd_path = candidate
+                            break
+
+                if os.path.isfile(ydd_path) and ytd_path:
+                    body_parts[cat] = {
+                        "ydd_path": ydd_path,
+                        "ytd_path": ytd_path,
+                    }
+
+            if body_parts:
+                peds.append({
+                    "model": model,
+                    "yft_path": yft_path,
+                    "ped_dir": dirpath,
+                    "body_parts": body_parts,
+                    "output_rel": f"{model}/preview.webp",
+                })
+
+    return peds
+
+
+# ---------------------------------------------------------------------------
 # Main orchestration
 # ---------------------------------------------------------------------------
 
@@ -783,6 +869,48 @@ def scan_and_process(
                         print(f"  [3D] FAIL: {item['source_file']} -- {rr.error} "
                               f"(falling back to flat)")
                     flat_items.append(item)
+
+    # --- Step 6b: Full ped preview renders ---
+    if render_3d and blender_path:
+        custom_peds = discover_custom_peds(input_dir)
+        if custom_peds:
+            logger.info("Rendering %d custom ped preview(s)...", len(custom_peds))
+            print(f"\nRendering {len(custom_peds)} custom ped preview(s)...")
+            if json_progress:
+                _emit_json({"type": "phase", "phase": "ped_previews",
+                             "total": len(custom_peds)})
+
+            from src.blender_renderer import render_full_ped_batch
+            ped_results = render_full_ped_batch(
+                custom_peds, blender_path, output_dir,
+                render_size=render_size,
+                taa_samples=taa_samples,
+                output_size=output_size,
+                webp_quality=webp_quality,
+                green_hair_fix=green_hair_fix,
+            )
+
+            for pr in ped_results:
+                if pr.get("success"):
+                    catalog.add_item(CatalogItem(
+                        dlc_name=pr["model"],
+                        gender="unknown",
+                        category="preview",
+                        drawable_id=0,
+                        texture_path=pr["output_rel"],
+                        variants=0,
+                        source_file=f"{pr['model']}.yft",
+                        width=output_size or 512,
+                        height=output_size or 512,
+                        original_width=render_size or 1024,
+                        original_height=render_size or 1024,
+                        format_name="3D_RENDER",
+                        render_type="3d",
+                        item_type="ped_preview",
+                    ))
+                    print(f"  {pr['model']}: OK")
+                else:
+                    print(f"  {pr['model']}: FAILED — {pr.get('error')}")
 
     # --- Pre-create all output directories (avoid per-file makedirs overhead) ---
     all_work = flat_items + tattoo_work_items
