@@ -403,10 +403,12 @@ def scan_and_process(
         x["drawable_id"],
     ))
 
-    # Base game heads keep their original IDs; others start after
+    # Base game heads keep their original IDs (0-45); addon heads start at 46+.
+    # Default to 45 so addon heads always start at 46 even when base game
+    # heads are not in the current run.
     base_game_max = max(
         (item["drawable_id"] for item in head_items if item["dlc_name"] == "base_game"),
-        default=-1,
+        default=45,
     )
     next_head_id = base_game_max + 1
 
