@@ -639,7 +639,11 @@ def _worker_thread(
         # Props: rotation
         category = item.get("category", "")
         if category.startswith("p_"):
-            blender_item["rotation_steps"] = [[-math.pi, -math.pi / 2, 0]]
+            if category == "p_lwrist":
+                # Watches: X -90°, Y -90°
+                blender_item["rotation_steps"] = [[-math.pi / 2, -math.pi / 2, 0]]
+            else:
+                blender_item["rotation_steps"] = [[-math.pi, -math.pi / 2, 0]]
             blender_item["camera_elevation"] = 0
 
         # Fallback base body mesh

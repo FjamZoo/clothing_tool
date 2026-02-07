@@ -21,3 +21,4 @@ gui/build/
 *.swp
 Thumbs.db
 .DS_Store
+.claude/settings.local.json
