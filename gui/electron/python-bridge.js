@@ -24,6 +24,8 @@ class PythonBridge {
     if (config.workers) args.push("--workers", String(config.workers));
     if (config.dlcs && config.dlcs.length > 0)
       args.push("--dlcs", config.dlcs.join(","));
+    if (config.categories && config.categories.length > 0)
+      args.push("--categories", config.categories.join(","));
 
     // Render settings
     if (config.taaSamples) args.push("--taa-samples", String(config.taaSamples));

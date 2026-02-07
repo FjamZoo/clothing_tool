@@ -51,6 +51,16 @@ export let dlcState = $state({
 });
 
 // ---------------------------------------------------------------------------
+// Categories
+// ---------------------------------------------------------------------------
+export let categoryState = $state({
+  /** @type {{ key: string, label: string, items: number }[]} */
+  categories: [],
+  /** @type {Set<string>} */
+  selected: new Set(),
+});
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 export let settings = $state({
@@ -128,6 +138,27 @@ export function toggleDlc(name) {
     next.add(name);
   }
   dlcState.selected = next;
+}
+
+/** Select all categories. */
+export function selectAllCategories() {
+  categoryState.selected = new Set(categoryState.categories.map((c) => c.key));
+}
+
+/** Deselect all categories. */
+export function deselectAllCategories() {
+  categoryState.selected = new Set();
+}
+
+/** Toggle a single category selection. */
+export function toggleCategory(key) {
+  const next = new Set(categoryState.selected);
+  if (next.has(key)) {
+    next.delete(key);
+  } else {
+    next.add(key);
+  }
+  categoryState.selected = next;
 }
 
 /** Add a log line. */

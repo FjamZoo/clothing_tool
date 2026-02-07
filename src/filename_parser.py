@@ -88,6 +88,35 @@ def prop_display_name(category: str) -> str:
     return PROP_DISPLAY_NAMES.get(category, category)
 
 
+# Human-friendly labels for all categories (clothing, props, tattoos).
+# Keys are the display-level names (after prop_display_name mapping).
+CATEGORY_DISPLAY_NAMES: dict[str, str] = {
+    "accs": "Accessories",
+    "jbib": "Tops",
+    "lowr": "Pants",
+    "uppr": "Undershirts",
+    "feet": "Shoes",
+    "berd": "Beards",
+    "hair": "Hair",
+    "teef": "Teeth",
+    "decl": "Decals",
+    "task": "Body Armor",
+    "hand": "Bags",
+    "head": "Heads",
+    "hat": "Hats",
+    "glass": "Glasses",
+    "ear": "Earrings",
+    "watch": "Watches",
+    "bracelet": "Bracelets",
+    "tattoo": "Tattoos",
+}
+
+
+def category_display_name(category: str) -> str:
+    """Return the human-friendly label for a category, or the key unchanged."""
+    return CATEGORY_DISPLAY_NAMES.get(category, category)
+
+
 @dataclass
 class YtdFileInfo:
     """Parsed metadata from a .ytd texture filename."""

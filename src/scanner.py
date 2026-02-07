@@ -20,7 +20,7 @@ import json
 
 from src import rsc7, ytd_parser, dds_builder, image_processor
 from src.catalog import CatalogBuilder, CatalogItem
-from src.filename_parser import parse_ytd_filename, parse_tattoo_filename, count_variants, is_prop_category, prop_display_name
+from src.filename_parser import parse_ytd_filename, parse_tattoo_filename, count_variants, is_prop_category, prop_display_name, category_display_name
 from src.meta_parser import build_dlc_map
 from src.tattoo_parser import build_tattoo_meta
 from src.ydd_pairer import find_ydd_for_ytd, find_fallback_ydd, find_base_body_ydd
@@ -203,6 +203,7 @@ def scan_and_process(
     json_progress: bool = False,
     scan_only: bool = False,
     dlcs: list[str] | None = None,
+    categories: list[str] | None = None,
     taa_samples: int = 0,
     render_size: int = 0,
     supersampling: int = 0,
@@ -364,6 +365,15 @@ def scan_and_process(
                       if item["dlc_name"].lower() in dlcs_lower]
         print(f"  Filtered to {len(work_items)} items matching --dlcs: {', '.join(dlcs)}")
 
+    # ------------------------------------------------------------------
+    # Filter by --categories if specified
+    # ------------------------------------------------------------------
+    if categories:
+        cats_lower = {c.lower() for c in categories}
+        work_items = [item for item in work_items
+                      if item["display_category"].lower() in cats_lower]
+        print(f"  Filtered to {len(work_items)} items matching --categories: {', '.join(categories)}")
+
     # Deduplicate shared heads (identical between male/female)
     seen_keys: set[str] = set()
     deduped_items: list[dict] = []
@@ -465,6 +475,13 @@ def scan_and_process(
         dlcs_lower = {d.lower() for d in dlcs}
         tattoo_work_items = [item for item in tattoo_work_items
                              if item["dlc_name"].lower() in dlcs_lower]
+
+    # Filter tattoos by --categories if specified
+    if categories:
+        cats_lower = {c.lower() for c in categories}
+        if "tattoo" not in cats_lower:
+            tattoo_work_items = []
+
     print(f"  {len(tattoo_work_items)} tattoo files to process")
 
     # ------------------------------------------------------------------
@@ -474,6 +491,7 @@ def scan_and_process(
         # Build DLC item counts for scan-only output
         stream_dlcs: dict[str, dict] = {}
         base_game_dlcs: dict[str, dict] = {}
+        cat_counts: dict[str, int] = {}
 
         for item in work_items + tattoo_work_items:
             dn = item["dlc_name"]
@@ -486,9 +504,23 @@ def scan_and_process(
                 target[dn] = {"name": dn, "items": 0}
             target[dn]["items"] += 1
 
+            # Count items per display category
+            cat_key = item.get("display_category", item.get("category", "unknown"))
+            # Tattoo items don't have display_category — use "tattoo"
+            if "index" in item:
+                cat_key = "tattoo"
+            cat_counts[cat_key] = cat_counts.get(cat_key, 0) + 1
+
         result = {
             "stream": sorted(stream_dlcs.values(), key=lambda x: x["name"]),
             "base_game": sorted(base_game_dlcs.values(), key=lambda x: x["name"]),
+            "categories": sorted(
+                [
+                    {"key": k, "label": category_display_name(k), "items": v}
+                    for k, v in cat_counts.items()
+                ],
+                key=lambda x: x["label"],
+            ),
         }
         print(json.dumps(result, indent=2))
         return

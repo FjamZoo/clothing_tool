@@ -23,6 +23,7 @@ Options:
     --json-progress      Emit JSON lines to stdout for GUI progress
     --scan-only          Discover DLCs + item counts, output JSON, exit
     --dlcs LIST          Comma-separated DLC folder names to process
+    --categories LIST    Comma-separated category keys to process (e.g. jbib,hat,tattoo)
     --taa-samples INT    TAA render samples (default: preset)
     --render-size INT    Blender render resolution in px (default: preset)
     --supersampling N    Supersampling multiplier: 1, 2, or 4
@@ -148,6 +149,10 @@ def main() -> None:
         help="Comma-separated DLC folder names to process (default: all)",
     )
     parser.add_argument(
+        "--categories",
+        help="Comma-separated category keys to process, e.g. jbib,hat,tattoo (default: all)",
+    )
+    parser.add_argument(
         "--taa-samples", type=int, default=0,
         help="TAA render samples (default: 0 = use preset)",
     )
@@ -184,6 +189,7 @@ def main() -> None:
         return
 
     dlcs_list = [d.strip() for d in args.dlcs.split(",")] if args.dlcs else None
+    categories_list = [c.strip() for c in args.categories.split(",")] if args.categories else None
 
     scan_and_process(
         input_dir=args.input,
@@ -200,6 +206,7 @@ def main() -> None:
         json_progress=args.json_progress,
         scan_only=args.scan_only,
         dlcs=dlcs_list,
+        categories=categories_list,
         taa_samples=args.taa_samples,
         render_size=args.render_size,
         supersampling=args.supersampling,

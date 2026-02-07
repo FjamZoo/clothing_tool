@@ -2,17 +2,20 @@
   import TitleBar from "./lib/TitleBar.svelte";
   import PathPicker from "./lib/PathPicker.svelte";
   import DlcList from "./lib/DlcList.svelte";
+  import CategoryFilter from "./lib/CategoryFilter.svelte";
   import ProfileBar from "./lib/ProfileBar.svelte";
   import Settings from "./lib/Settings.svelte";
   import ProgressLog from "./lib/ProgressLog.svelte";
   import {
     paths,
     dlcState,
+    categoryState,
     settings,
     processing,
     addLog,
     resetProcessing,
     selectAllDlcs,
+    selectAllCategories,
   } from "./lib/stores.svelte.js";
 
   let unsubProgress = $state(null);
@@ -52,6 +55,13 @@
     window.api.setSetting("selectedDlcs", sel);
   });
 
+  // Auto-save category selection whenever it changes (after initial load)
+  $effect(() => {
+    if (!loaded || !window.api) return;
+    const sel = [...categoryState.selected];
+    window.api.setSetting("selectedCategories", sel);
+  });
+
   async function loadSavedState() {
     if (!window.api) { loaded = true; return; }
     try {
@@ -78,12 +88,16 @@
         if (s.forceReprocess != null) settings.forceReprocess = s.forceReprocess;
       }
 
-      // Auto-scan if input dir was saved, then restore DLC selection
+      // Auto-scan if input dir was saved, then restore DLC + category selection
       if (paths.inputDir) {
         await triggerScan();
         // Restore DLC selection after scan populates the list
         if (saved?.selectedDlcs && Array.isArray(saved.selectedDlcs)) {
           dlcState.selected = new Set(saved.selectedDlcs);
+        }
+        // Restore category selection after scan populates the list
+        if (saved?.selectedCategories && Array.isArray(saved.selectedCategories)) {
+          categoryState.selected = new Set(saved.selectedCategories);
         }
       }
     } catch {
@@ -113,12 +127,15 @@
       const result = await window.api.scan(config);
       dlcState.streamDlcs = result.stream || [];
       dlcState.baseGameDlcs = result.base_game || [];
+      categoryState.categories = result.categories || [];
       // Auto-select all
       selectAllDlcs();
+      selectAllCategories();
     } catch (err) {
       dlcState.scanError = err.message || "Scan failed";
       dlcState.streamDlcs = [];
       dlcState.baseGameDlcs = [];
+      categoryState.categories = [];
     } finally {
       dlcState.scanning = false;
     }
@@ -131,6 +148,7 @@
       baseGameDir: paths.baseGameDir || undefined,
       blenderPath: paths.blenderPath || undefined,
       dlcs: [...dlcState.selected],
+      categories: [...categoryState.selected],
       render3d: settings.mode === "3d",
       taaSamples: settings.taaSamples,
       renderSize: settings.renderSize,
@@ -224,7 +242,7 @@
   }
 
   let canStart = $derived(
-    paths.inputDir && paths.outputDir && dlcState.selected.size > 0 && !processing.running
+    paths.inputDir && paths.outputDir && dlcState.selected.size > 0 && categoryState.selected.size > 0 && !processing.running
   );
 </script>
 
@@ -287,6 +305,11 @@
     <!-- Middle: DLC Picker -->
     <section class="dlc-section">
       <DlcList />
+    </section>
+
+    <!-- Category Filter -->
+    <section class="category-section">
+      <CategoryFilter />
     </section>
 
     <!-- Bottom: Settings, Actions & Progress -->
@@ -388,6 +411,11 @@
     flex: 1;
     min-height: 80px;
     display: flex;
+  }
+
+  /* --- Category section --- */
+  .category-section {
+    flex-shrink: 0;
   }
 
   /* --- Bottom section --- */
