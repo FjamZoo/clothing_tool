@@ -288,6 +288,9 @@ def scan_and_process(
     work_items: list[dict] = []
     skipped_parse = 0
 
+    # Pre-compute normalized base_game prefix for fast is_base_game checks
+    _bg_prefix = os.path.normcase(base_game_dir) if base_game_dir else None
+
     for ytd_path in all_ytd_files:
         info = parse_ytd_filename(ytd_path)
         if info is None:
@@ -354,6 +357,8 @@ def scan_and_process(
             "source_file": os.path.basename(ytd_path),
             "is_head": is_mp_head,
             "is_prop": is_prop_category(info.category),
+            "is_base_game": (_bg_prefix is not None and
+                os.path.normcase(ytd_path).startswith(_bg_prefix)),
         })
 
     # ------------------------------------------------------------------
@@ -708,66 +713,74 @@ def scan_and_process(
     failed = 0
     failed_dir = os.path.join(output_dir, "failed")
 
-    # --- 3D rendering via Blender ---
+    # --- 3D rendering via Blender (base_game first, then stream) ---
     if render_3d_items:
         from src.blender_renderer import render_batch, DEFAULT_PARALLEL_BLENDERS
 
         parallel = min(DEFAULT_PARALLEL_BLENDERS, max(2, workers // 2))
-        print(f"\nRendering {len(render_3d_items)} items in 3D via Blender "
-              f"(batch_size={batch_size}, {parallel} parallel instances)...")
 
-        render_results = render_batch(
-            render_3d_items, blender_path,
-            batch_size=batch_size, parallel=parallel,
-            render_size=render_size,
-            taa_samples=taa_samples,
-            output_size=output_size,
-            webp_quality=webp_quality,
-            green_hair_fix=green_hair_fix,
-        )
+        # Split into base_game-first ordering
+        bg_3d = [i for i in render_3d_items if i.get("is_base_game")]
+        stream_3d = [i for i in render_3d_items if not i.get("is_base_game")]
 
-        for rr in render_results:
-            # Find the original item
-            item = next(
-                (i for i in render_3d_items if i["catalog_key"] == rr.catalog_key),
-                None,
-            )
-            if item is None:
+        for batch_label, batch_3d in [("base game", bg_3d), ("stream", stream_3d)]:
+            if not batch_3d:
                 continue
+            print(f"\nRendering {len(batch_3d)} {batch_label} items in 3D via Blender "
+                  f"(batch_size={batch_size}, {parallel} parallel instances)...")
 
-            if rr.success:
-                # WebP conversion already done by blender_renderer
-                variants = count_variants(item["ytd_path"])
-                catalog.add_item(CatalogItem(
-                    dlc_name=item["dlc_name"],
-                    gender=item["gender"],
-                    category=item["display_category"],
-                    drawable_id=item["drawable_id"],
-                    texture_path=item["texture_rel"],
-                    variants=variants,
-                    source_file=item["source_file"],
-                    width=512,
-                    height=512,
-                    original_width=512,
-                    original_height=512,
-                    format_name="3D_RENDER",
-                    render_type="3d",
-                    item_type="prop" if item.get("is_prop") else "clothing",
-                ))
-                processed += 1
-                _progress_counter += 1
-                if json_progress:
-                    _emit_json({"type": "progress", "current": _progress_counter,
-                                "total": to_process,
-                                "file": item["texture_rel"], "status": "ok"})
-                if verbose:
-                    print(f"  [3D] OK: {item['source_file']}")
-            else:
-                # 3D render failed — fall back to flat texture
-                if verbose:
-                    print(f"  [3D] FAIL: {item['source_file']} -- {rr.error} "
-                          f"(falling back to flat)")
-                flat_items.append(item)
+            render_results = render_batch(
+                batch_3d, blender_path,
+                batch_size=batch_size, parallel=parallel,
+                render_size=render_size,
+                taa_samples=taa_samples,
+                output_size=output_size,
+                webp_quality=webp_quality,
+                green_hair_fix=green_hair_fix,
+            )
+
+            for rr in render_results:
+                # Find the original item
+                item = next(
+                    (i for i in batch_3d if i["catalog_key"] == rr.catalog_key),
+                    None,
+                )
+                if item is None:
+                    continue
+
+                if rr.success:
+                    # WebP conversion already done by blender_renderer
+                    variants = count_variants(item["ytd_path"])
+                    catalog.add_item(CatalogItem(
+                        dlc_name=item["dlc_name"],
+                        gender=item["gender"],
+                        category=item["display_category"],
+                        drawable_id=item["drawable_id"],
+                        texture_path=item["texture_rel"],
+                        variants=variants,
+                        source_file=item["source_file"],
+                        width=512,
+                        height=512,
+                        original_width=512,
+                        original_height=512,
+                        format_name="3D_RENDER",
+                        render_type="3d",
+                        item_type="prop" if item.get("is_prop") else "clothing",
+                    ))
+                    processed += 1
+                    _progress_counter += 1
+                    if json_progress:
+                        _emit_json({"type": "progress", "current": _progress_counter,
+                                    "total": to_process,
+                                    "file": item["texture_rel"], "status": "ok"})
+                    if verbose:
+                        print(f"  [3D] OK: {item['source_file']}")
+                else:
+                    # 3D render failed — fall back to flat texture
+                    if verbose:
+                        print(f"  [3D] FAIL: {item['source_file']} -- {rr.error} "
+                              f"(falling back to flat)")
+                    flat_items.append(item)
 
     # --- Pre-create all output directories (avoid per-file makedirs overhead) ---
     all_work = flat_items + tattoo_work_items
@@ -779,7 +792,17 @@ def scan_and_process(
             output_dirs_seen.add(d)
     os.makedirs(failed_dir, exist_ok=True)
 
-    # --- Process all flat textures + tattoos in a single worker pool ---
+    # --- Process flat textures + tattoos (base_game first, then stream) ---
+    # Split flat items into base_game-first batches to guarantee ordering.
+    bg_flat = [i for i in flat_items if i.get("is_base_game")]
+    stream_flat = [i for i in flat_items if not i.get("is_base_game")]
+    # Tattoos are never base_game — always in the stream batch.
+    flat_batches = []
+    if bg_flat:
+        flat_batches.append(("base game", bg_flat))
+    if stream_flat or tattoo_work_items:
+        flat_batches.append(("stream", stream_flat + tattoo_work_items))
+
     all_flat_total = len(all_work)
     if all_flat_total > 0:
         flat_prop_ct = sum(1 for i in flat_items if i.get("is_prop"))
@@ -789,118 +812,123 @@ def scan_and_process(
 
         t_proc_start = time.perf_counter()
 
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            future_to_item = {}
-            for item in all_work:
-                future = executor.submit(
-                    process_single_ytd,
-                    item["ytd_path"],
-                    item["output_webp"],
-                    output_size,
-                    webp_quality,
-                )
-                future_to_item[future] = item
+        for batch_label, batch_items in flat_batches:
+            if not batch_items:
+                continue
+            print(f"  Processing {len(batch_items)} {batch_label} flat items...")
 
-            for future in as_completed(future_to_item):
-                item = future_to_item[future]
-                current = processed + failed + 1
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                future_to_item = {}
+                for item in batch_items:
+                    future = executor.submit(
+                        process_single_ytd,
+                        item["ytd_path"],
+                        item["output_webp"],
+                        output_size,
+                        webp_quality,
+                    )
+                    future_to_item[future] = item
 
-                try:
-                    result = future.result()
-
-                    is_tattoo = "index" in item
-
-                    if is_tattoo:
-                        catalog.add_item(CatalogItem(
-                            dlc_name=item["dlc_name"],
-                            gender="unisex",
-                            category="tattoo",
-                            drawable_id=item["index"],
-                            texture_path=item["texture_rel"],
-                            variants=1,
-                            source_file=item["source_file"],
-                            width=512,
-                            height=512,
-                            original_width=result["original_width"],
-                            original_height=result["original_height"],
-                            format_name=result["format"],
-                            item_type="tattoo",
-                            zone=item["zone"],
-                        ))
-                    else:
-                        variants = count_variants(item["ytd_path"])
-                        catalog.add_item(CatalogItem(
-                            dlc_name=item["dlc_name"],
-                            gender=item["gender"],
-                            category=item.get("display_category", item["category"]),
-                            drawable_id=item["drawable_id"],
-                            texture_path=item["texture_rel"],
-                            variants=variants,
-                            source_file=item["source_file"],
-                            width=512,
-                            height=512,
-                            original_width=result["original_width"],
-                            original_height=result["original_height"],
-                            format_name=result["format"],
-                            item_type="prop" if item.get("is_prop") else "clothing",
-                        ))
-                    processed += 1
-                    _progress_counter += 1
-
-                    if json_progress:
-                        _emit_json({"type": "progress",
-                                    "current": _progress_counter,
-                                    "total": to_process,
-                                    "file": item["texture_rel"],
-                                    "status": "ok"})
-
-                    if verbose:
-                        elapsed_so_far = time.perf_counter() - t_proc_start
-                        rate = processed / elapsed_so_far if elapsed_so_far > 0 else 0
-                        extra = (f" zone={item['zone']}" if is_tattoo else "")
-                        print(
-                            f"  [{current}/{to_process}] OK: {item['source_file']} "
-                            f"({result['original_width']}x{result['original_height']} "
-                            f"{result['format']}{extra}) "
-                            f"[{rate:.1f} img/s]"
-                        )
-
-                except Exception as exc:
-                    failed += 1
-                    _progress_counter += 1
-                    error_msg = f"{type(exc).__name__}: {exc}"
-                    catalog.add_failure(item["ytd_path"], error_msg)
-
-                    if json_progress:
-                        _emit_json({"type": "progress",
-                                    "current": _progress_counter,
-                                    "total": to_process,
-                                    "file": item.get("texture_rel", item["source_file"]),
-                                    "status": "failed",
-                                    "error": error_msg})
-
-                    if verbose:
-                        print(
-                            f"  [{current}/{to_process}] FAIL: {item['source_file']} "
-                            f"-- {error_msg}"
-                        )
+                for future in as_completed(future_to_item):
+                    item = future_to_item[future]
+                    current = processed + failed + 1
 
                     try:
+                        result = future.result()
+
                         is_tattoo = "index" in item
+
                         if is_tattoo:
-                            log_name = f"tattoo_{item['dlc_name']}_{item['index']:03d}.log"
+                            catalog.add_item(CatalogItem(
+                                dlc_name=item["dlc_name"],
+                                gender="unisex",
+                                category="tattoo",
+                                drawable_id=item["index"],
+                                texture_path=item["texture_rel"],
+                                variants=1,
+                                source_file=item["source_file"],
+                                width=512,
+                                height=512,
+                                original_width=result["original_width"],
+                                original_height=result["original_height"],
+                                format_name=result["format"],
+                                item_type="tattoo",
+                                zone=item["zone"],
+                            ))
                         else:
-                            log_name = (
-                                f"{item['dlc_name']}_{item['gender']}_{item['category']}"
-                                f"_{item['drawable_id']:03d}.log"
+                            variants = count_variants(item["ytd_path"])
+                            catalog.add_item(CatalogItem(
+                                dlc_name=item["dlc_name"],
+                                gender=item["gender"],
+                                category=item.get("display_category", item["category"]),
+                                drawable_id=item["drawable_id"],
+                                texture_path=item["texture_rel"],
+                                variants=variants,
+                                source_file=item["source_file"],
+                                width=512,
+                                height=512,
+                                original_width=result["original_width"],
+                                original_height=result["original_height"],
+                                format_name=result["format"],
+                                item_type="prop" if item.get("is_prop") else "clothing",
+                            ))
+                        processed += 1
+                        _progress_counter += 1
+
+                        if json_progress:
+                            _emit_json({"type": "progress",
+                                        "current": _progress_counter,
+                                        "total": to_process,
+                                        "file": item["texture_rel"],
+                                        "status": "ok"})
+
+                        if verbose:
+                            elapsed_so_far = time.perf_counter() - t_proc_start
+                            rate = processed / elapsed_so_far if elapsed_so_far > 0 else 0
+                            extra = (f" zone={item['zone']}" if is_tattoo else "")
+                            print(
+                                f"  [{current}/{to_process}] OK: {item['source_file']} "
+                                f"({result['original_width']}x{result['original_height']} "
+                                f"{result['format']}{extra}) "
+                                f"[{rate:.1f} img/s]"
                             )
-                        log_path = os.path.join(failed_dir, log_name)
-                        with open(log_path, "w", encoding="utf-8") as f:
-                            f.write(f"Source: {item['ytd_path']}\n")
-                            f.write(f"Output: {item['output_webp']}\n")
-                            f.write(f"Error:  {error_msg}\n")
-                    except OSError as log_err:
-                        logger.warning("Failed to write error log: %s", log_err)
+
+                    except Exception as exc:
+                        failed += 1
+                        _progress_counter += 1
+                        error_msg = f"{type(exc).__name__}: {exc}"
+                        catalog.add_failure(item["ytd_path"], error_msg)
+
+                        if json_progress:
+                            _emit_json({"type": "progress",
+                                        "current": _progress_counter,
+                                        "total": to_process,
+                                        "file": item.get("texture_rel", item["source_file"]),
+                                        "status": "failed",
+                                        "error": error_msg})
+
+                        if verbose:
+                            print(
+                                f"  [{current}/{to_process}] FAIL: {item['source_file']} "
+                                f"-- {error_msg}"
+                            )
+
+                        try:
+                            is_tattoo = "index" in item
+                            if is_tattoo:
+                                log_name = f"tattoo_{item['dlc_name']}_{item['index']:03d}.log"
+                            else:
+                                log_name = (
+                                    f"{item['dlc_name']}_{item['gender']}_{item['category']}"
+                                    f"_{item['drawable_id']:03d}.log"
+                                )
+                            log_path = os.path.join(failed_dir, log_name)
+                            with open(log_path, "w", encoding="utf-8") as f:
+                                f.write(f"Source: {item['ytd_path']}\n")
+                                f.write(f"Output: {item['output_webp']}\n")
+                                f.write(f"Error:  {error_msg}\n")
+                        except OSError as log_err:
+                            logger.warning("Failed to write error log: %s", log_err)
 
         # Print throughput stats
         t_proc_elapsed = time.perf_counter() - t_proc_start
