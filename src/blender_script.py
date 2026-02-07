@@ -299,7 +299,16 @@ def fix_missing_textures(dds_files: list[str]) -> int:
 
             # Try to match by name first
             if img is not None:
-                match_name = os.path.splitext(img.name)[0].lower()
+                # Normalize: strip Blender's .001 duplicate suffix and .dds ext
+                # e.g. "uppr_diff_000_a_whi.dds.001" -> "uppr_diff_000_a_whi"
+                match_name = img.name.lower()
+                # Strip trailing .NNN Blender duplicate suffixes
+                while match_name and match_name.rsplit('.', 1)[-1].isdigit():
+                    match_name = match_name.rsplit('.', 1)[0]
+                # Strip .dds extension
+                if match_name.endswith('.dds'):
+                    match_name = match_name[:-4]
+
                 if match_name in loaded_images:
                     node.image = loaded_images[match_name]
                     fixed += 1
@@ -631,6 +640,161 @@ def render_item(item: dict, cam_obj: bpy.types.Object,
     return result
 
 
+def render_full_ped(item: dict, cam_obj: bpy.types.Object,
+                    work_base: str) -> dict:
+    """Render a full custom ped by assembling multiple body parts on a skeleton.
+
+    Args:
+        item: Dict with keys:
+            - yft_path: Path to .yft skeleton file
+            - body_parts: Dict of {category: {ydd_path, dds_files}}
+            - output_path: Where to save the render
+        cam_obj: The camera object
+        work_base: Base temp directory for this Blender session
+
+    Returns:
+        Dict with keys: output_path, success, error (if failed)
+    """
+    yft_path = item["yft_path"]
+    body_parts = item["body_parts"]
+    output_path = item["output_path"]
+
+    result = {"output_path": output_path, "success": False, "error": None}
+
+    try:
+        # Clear previous objects (keep camera and lights)
+        for obj in list(bpy.data.objects):
+            if obj.type not in ('CAMERA', 'LIGHT'):
+                bpy.data.objects.remove(obj, do_unlink=True)
+        for mesh in list(bpy.data.meshes):
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+        for mat in list(bpy.data.materials):
+            if mat.users == 0:
+                bpy.data.materials.remove(mat)
+        for img in list(bpy.data.images):
+            if img.users == 0:
+                bpy.data.images.remove(img)
+
+        # Enable external skeleton import in Sollumz preferences
+        _set_sollumz_external_skeleton(True)
+
+        # Create a shared work directory and copy the YFT skeleton into it
+        ped_work = os.path.join(work_base, f"ped_{id(item)}")
+        os.makedirs(ped_work, exist_ok=True)
+        yft_basename = os.path.basename(yft_path)
+        dest_yft = os.path.join(ped_work, yft_basename)
+        shutil.copy2(yft_path, dest_yft)
+
+        # Import each body part YDD with its textures.
+        # Sollumz will auto-detect the .yft in the same directory and use it
+        # as the external skeleton/armature.
+        #
+        # Strategy: import ALL body parts first, then fix all textures in
+        # one pass.  Sollumz's sequential imports overwrite image references
+        # from earlier body parts, so per-part fix_missing_textures() fails.
+        imported_any = False
+        all_dds_files: list[str] = []
+
+        for cat, part in body_parts.items():
+            ydd_path = part["ydd_path"]
+            dds_files = part.get("dds_files", [])
+
+            # Copy YDD to work dir (alongside the YFT)
+            ydd_basename = os.path.basename(ydd_path)
+            dest_ydd = os.path.join(ped_work, ydd_basename)
+            shutil.copy2(ydd_path, dest_ydd)
+
+            # Copy DDS textures into a subdirectory matching the YDD stem
+            ydd_stem = os.path.splitext(ydd_basename)[0]
+            tex_dir = os.path.join(ped_work, ydd_stem)
+            os.makedirs(tex_dir, exist_ok=True)
+            for dds_path in dds_files:
+                dest = os.path.join(tex_dir, os.path.basename(dds_path))
+                shutil.copy2(dds_path, dest)
+                all_dds_files.append(dest)
+
+            # Import via Sollumz (skeleton auto-detected from same directory)
+            if import_ydd(dest_ydd):
+                imported_any = True
+            else:
+                print(f"    WARNING: Failed to import {cat} ({ydd_basename})",
+                      file=sys.stderr)
+
+        if not imported_any:
+            result["error"] = "No body parts imported successfully"
+            return result
+
+        # Disable external skeleton for subsequent normal renders
+        _set_sollumz_external_skeleton(False)
+
+        # Fix ALL textures in one pass after all imports are done
+        fix_missing_textures(all_dds_files)
+
+        # Fix alpha modes across all imported materials
+        fix_alpha_modes()
+
+        # Fix hair tint if hair was imported
+        if GREEN_HAIR_FIX and "hair" in body_parts:
+            fix_hair_tint()
+
+        # Frame camera on the full assembled character
+        frame_camera(cam_obj, elevation_deg=CAMERA_ELEVATION_DEG)
+
+        # Render
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        bpy.context.scene.render.filepath = output_path
+        bpy.ops.render.render(write_still=True)
+
+        if os.path.isfile(output_path):
+            result["success"] = True
+        else:
+            result["error"] = "Render produced no output file"
+
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        traceback.print_exc(file=sys.stderr)
+    finally:
+        # Always restore external skeleton setting
+        try:
+            _set_sollumz_external_skeleton(False)
+        except Exception:
+            pass
+
+    return result
+
+
+def _set_sollumz_external_skeleton(enabled: bool) -> None:
+    """Toggle the 'Import External Skeleton' setting in Sollumz preferences."""
+    # Method 1: Try via Sollumz's own helper
+    for mod_name in ("bl_ext.blender_org.sollumz_dev", "bl_ext.blender_org.sollumz"):
+        try:
+            import importlib
+            mod = importlib.import_module(f"{mod_name}.sollumz_preferences")
+            settings = mod.get_import_settings()
+            settings.import_ext_skeleton = enabled
+            print(f"    Sollumz import_ext_skeleton = {enabled} (via {mod_name})")
+            return
+        except Exception:
+            continue
+
+    # Method 2: Try via bpy.context.preferences.addons
+    try:
+        for addon_name in ("bl_ext.blender_org.sollumz_dev",
+                           "bl_ext.blender_org.sollumz"):
+            addon_prefs = bpy.context.preferences.addons.get(addon_name)
+            if addon_prefs:
+                prefs_obj = addon_prefs.preferences
+                if hasattr(prefs_obj, "import_settings"):
+                    prefs_obj.import_settings.import_ext_skeleton = enabled
+                    print(f"    Sollumz import_ext_skeleton = {enabled} (via addon prefs)")
+                    return
+    except Exception:
+        pass
+
+    print(f"    WARNING: Could not set Sollumz external skeleton preference")
+
+
 def _apply_config(config: dict) -> None:
     """Apply runtime config overrides to module-level constants."""
     global RENDER_SIZE, TAA_SAMPLES, GREEN_HAIR_FIX
@@ -770,7 +934,10 @@ def worker_main() -> None:
         print(f"  [worker item {rendered}] Rendering {ydd_name}...",
               file=sys.stderr, flush=True)
 
-        result = render_item(item, cam_obj, work_base)
+        if item.get("type") == "full_ped":
+            result = render_full_ped(item, cam_obj, work_base)
+        else:
+            result = render_item(item, cam_obj, work_base)
 
         status = "OK" if result["success"] else f"FAIL: {result['error']}"
         print(f"    {status}", file=sys.stderr, flush=True)

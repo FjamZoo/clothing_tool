@@ -22,3 +22,6 @@ gui/build/
 Thumbs.db
 .DS_Store
 .claude/settings.local.json
+*.dds
+*.webp
+*.png

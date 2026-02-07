@@ -240,6 +240,33 @@ def fix_green_tint_dds(dds_paths: list[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Full ped DDS pre-extraction
+# ---------------------------------------------------------------------------
+
+def pre_extract_ped_dds(ped: dict, dds_cache_dir: str) -> dict[str, list[str]]:
+    """Pre-extract DDS textures for all body parts of a custom ped.
+
+    Args:
+        ped: Custom ped dict from discover_custom_peds()
+        dds_cache_dir: Directory to store extracted DDS files
+
+    Returns:
+        Dict mapping category -> list of DDS file paths
+    """
+    result: dict[str, list[str]] = {}
+    for cat, part in ped["body_parts"].items():
+        ytd_path = part["ytd_path"]
+        try:
+            dds_files = extract_dds_for_ydd(ytd_path, dds_cache_dir)
+            result[cat] = dds_files
+        except Exception as exc:
+            logger.warning("Failed to extract DDS for %s %s: %s",
+                           ped["model"], cat, exc)
+            result[cat] = []
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Parallel DDS pre-extraction (for persistent worker pool)
 # ---------------------------------------------------------------------------
 
@@ -1037,5 +1064,140 @@ def _post_process_result(bresult: dict, orig: dict,
         output_webp=output_webp,
         success=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Full ped rendering
+# ---------------------------------------------------------------------------
+
+def render_full_ped_batch(
+    peds: list[dict],
+    blender_path: str,
+    output_dir: str,
+    render_size: int = 0,
+    taa_samples: int = 0,
+    output_size: int = 0,
+    webp_quality: int = 0,
+    green_hair_fix: bool = True,
+) -> list[dict]:
+    """Render full-body previews for discovered custom peds.
+
+    Each ped is rendered as a single image with all body parts assembled
+    on the YFT skeleton.
+
+    Returns list of result dicts with output_path, model, output_rel, success.
+    """
+    if not peds:
+        return []
+
+    eff_output_size = output_size or image_processor.CANVAS_SIZE
+    eff_webp_quality = webp_quality or image_processor.WEBP_QUALITY
+    eff_webp_method = image_processor.WEBP_METHOD
+
+    render_config: dict = {}
+    if render_size:
+        render_config["render_size"] = render_size
+    if taa_samples:
+        render_config["taa_samples"] = taa_samples
+    render_config["green_hair_fix"] = green_hair_fix
+
+    results = []
+    dds_cache = tempfile.mkdtemp(prefix="ped_dds_")
+
+    try:
+        for ped in peds:
+            # Pre-extract DDS textures for all body parts
+            dds_by_cat = pre_extract_ped_dds(ped, dds_cache)
+
+            # Build the work item for Blender (absolute path required for Blender)
+            output_path = os.path.join(os.path.abspath(output_dir), "textures",
+                                       ped["output_rel"])
+            body_parts_with_dds = {}
+            for cat, part in ped["body_parts"].items():
+                body_parts_with_dds[cat] = {
+                    "ydd_path": part["ydd_path"],
+                    "dds_files": dds_by_cat.get(cat, []),
+                }
+
+            work_item = {
+                "type": "full_ped",
+                "yft_path": ped["yft_path"],
+                "body_parts": body_parts_with_dds,
+                "output_path": output_path,
+            }
+
+            # Render via a single dedicated Blender worker
+            pr = _render_single_ped(work_item, blender_path, render_config,
+                                    eff_output_size, eff_webp_quality,
+                                    eff_webp_method)
+            pr["model"] = ped["model"]
+            pr["output_rel"] = ped["output_rel"]
+            results.append(pr)
+    finally:
+        shutil.rmtree(dds_cache, ignore_errors=True)
+
+    return results
+
+
+def _render_single_ped(
+    work_item: dict,
+    blender_path: str,
+    render_config: dict,
+    output_size: int,
+    webp_quality: int,
+    webp_method: int,
+) -> dict:
+    """Render a single full ped via a temporary Blender worker.
+
+    Returns dict with keys: output_path, success, error.
+    """
+    result = {
+        "output_path": work_item["output_path"],
+        "success": False,
+        "error": None,
+    }
+
+    worker = BlenderWorker(99, blender_path, render_config=render_config)
+    try:
+        if not worker.start():
+            result["error"] = "Failed to start Blender worker for ped render"
+            return result
+
+        bresult = worker.render_item(work_item)
+
+        if not bresult.get("success"):
+            result["error"] = bresult.get("error", "Unknown Blender error")
+            return result
+
+        render_path = bresult["output_path"]
+
+        # Validate render isn't empty
+        if is_render_empty(render_path):
+            result["error"] = "Ped render produced empty image"
+            return result
+
+        # Downscale and save as final WebP
+        img = Image.open(render_path).convert("RGBA")
+        if img.width != output_size or img.height != output_size:
+            img = img.resize((output_size, output_size), Image.LANCZOS)
+
+        final_path = work_item["output_path"]
+        out_dir = os.path.dirname(final_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        img.save(final_path, "WEBP", quality=webp_quality, method=webp_method)
+
+        result["success"] = True
+
+    except BlenderCrashError as exc:
+        result["error"] = f"Blender crashed: {exc}"
+    except TimeoutError:
+        result["error"] = "Ped render timed out"
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        worker.shutdown()
+
+    return result
 
 
