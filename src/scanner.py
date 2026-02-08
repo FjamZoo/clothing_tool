@@ -607,6 +607,16 @@ def scan_and_process(
                 cat_key = "tattoo"
             cat_counts[cat_key] = cat_counts.get(cat_key, 0) + 1
 
+        # Count face overlays as a single "overlay" category
+        if overlays_dir:
+            from src.overlay_parser import discover_overlays, discover_replacement_overlays, merge_overlays
+            scan_overlays = discover_overlays(Path(overlays_dir))
+            scan_rep = discover_replacement_overlays(Path(input_dir))
+            if scan_rep:
+                scan_overlays = merge_overlays(scan_overlays, scan_rep)
+            if scan_overlays:
+                cat_counts["overlay"] = len(scan_overlays)
+
         result = {
             "stream": sorted(stream_dlcs.values(), key=lambda x: x["name"]),
             "base_game": sorted(base_game_dlcs.values(), key=lambda x: x["name"]),
@@ -929,6 +939,7 @@ def scan_and_process(
         if "overlay" not in {c.lower() for c in categories}:
             _run_overlays = False
     if _run_overlays:
+        from src.overlay_parser import discover_overlays, discover_replacement_overlays, merge_overlays
         overlay_infos = discover_overlays(Path(overlays_dir))
         # Merge with replacement overlays from stream [replacements] dirs
         rep_overlays = discover_replacement_overlays(Path(input_dir))

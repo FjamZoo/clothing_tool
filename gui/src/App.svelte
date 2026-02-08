@@ -70,6 +70,7 @@
       // Restore paths
       if (saved?.inputDir) paths.inputDir = saved.inputDir;
       if (saved?.baseGameDir) paths.baseGameDir = saved.baseGameDir;
+      if (saved?.overlaysDir) paths.overlaysDir = saved.overlaysDir;
       if (saved?.outputDir) paths.outputDir = saved.outputDir;
       if (saved?.blenderPath) paths.blenderPath = saved.blenderPath;
 
@@ -112,6 +113,7 @@
     // Auto-scan when input dir changes
     if (key === "inputDir" && value) triggerScan();
     if (key === "baseGameDir") triggerScan();
+    if (key === "overlaysDir") triggerScan();
   }
 
   async function triggerScan() {
@@ -123,6 +125,7 @@
       const config = {
         inputDir: paths.inputDir,
         baseGameDir: paths.baseGameDir || undefined,
+        overlaysDir: paths.overlaysDir || undefined,
       };
       const result = await window.api.scan(config);
       dlcState.streamDlcs = result.stream || [];
@@ -146,8 +149,9 @@
       inputDir: paths.inputDir,
       outputDir: paths.outputDir,
       baseGameDir: paths.baseGameDir || undefined,
+      overlaysDir: paths.overlaysDir || undefined,
       blenderPath: paths.blenderPath || undefined,
-      dlcs: [...dlcState.selected],
+      dlcs: dlcState.selected.size > 0 ? [...dlcState.selected] : ["__none__"],
       categories: [...categoryState.selected],
       render3d: settings.mode === "3d",
       taaSamples: settings.taaSamples,
@@ -212,8 +216,7 @@
   }
 
   async function startProcessing(dryRun = false) {
-    if (!paths.inputDir || !paths.outputDir) return;
-    if (dlcState.selected.size === 0) return;
+    if (!canStart) return;
 
     resetProcessing();
     processing.running = true;
@@ -241,8 +244,14 @@
     addLog("Process cancelled by user");
   }
 
+  let hasOverlays = $derived(
+    paths.overlaysDir && paths.baseGameDir && settings.mode === "3d"
+  );
+  let hasDlcWork = $derived(
+    dlcState.selected.size > 0 && categoryState.selected.size > 0
+  );
   let canStart = $derived(
-    paths.inputDir && paths.outputDir && dlcState.selected.size > 0 && categoryState.selected.size > 0 && !processing.running
+    paths.inputDir && paths.outputDir && (hasDlcWork || (hasOverlays && categoryState.selected.has("overlay"))) && !processing.running
   );
 </script>
 
@@ -274,6 +283,12 @@
           placeholder="Optional: base_game directory"
         />
         <PathPicker
+          label="Overlays Folder"
+          value={paths.overlaysDir}
+          onChange={(v) => savePath("overlaysDir", v)}
+          placeholder="Optional: face overlay .ytd files"
+        />
+        <PathPicker
           label="Blender Path"
           value={paths.blenderPath}
           onChange={(v) => savePath("blenderPath", v)}
@@ -282,6 +297,15 @@
           filters={[{ name: "Blender", extensions: ["exe"] }]}
         />
       </div>
+      {#if paths.overlaysDir && !paths.baseGameDir}
+        <div class="hint hint-warn">
+          Overlays require a Base Game Folder — set it above to enable overlay rendering.
+        </div>
+      {:else if paths.overlaysDir}
+        <div class="hint">
+          Overlay replacements from stream packs will be auto-detected and merged.
+        </div>
+      {/if}
       <div class="mode-row">
         <div class="mode-toggle">
           <button
@@ -375,6 +399,20 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8px;
+  }
+  .hint {
+    margin-top: 6px;
+    padding: 5px 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+    border-radius: var(--radius);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+  }
+  .hint-warn {
+    color: var(--warning, #e2b340);
+    border-color: rgba(226, 179, 64, 0.3);
+    background: rgba(226, 179, 64, 0.08);
   }
   .mode-row {
     margin-top: 8px;

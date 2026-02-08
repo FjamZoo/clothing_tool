@@ -20,6 +20,7 @@ class PythonBridge {
     if (config.inputDir) args.push("--input", config.inputDir);
     if (config.outputDir) args.push("--output", config.outputDir);
     if (config.baseGameDir) args.push("--base-game", config.baseGameDir);
+    if (config.overlaysDir) args.push("--overlays", config.overlaysDir);
     if (config.blenderPath) args.push("--blender-path", config.blenderPath);
     if (config.workers) args.push("--workers", String(config.workers));
     if (config.dlcs && config.dlcs.length > 0)

@@ -109,6 +109,7 @@ CATEGORY_DISPLAY_NAMES: dict[str, str] = {
     "watch": "Watches",
     "bracelet": "Bracelets",
     "tattoo": "Tattoos",
+    "overlay": "Overlays",
 }
 
 
