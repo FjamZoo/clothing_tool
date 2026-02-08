@@ -3,6 +3,15 @@
 
   let logContainer = $state(null);
   let autoScroll = $state(true);
+  let copied = $state(false);
+
+  function copyLog() {
+    const text = processing.log.join("\n");
+    navigator.clipboard.writeText(text).then(() => {
+      copied = true;
+      setTimeout(() => { copied = false; }, 1500);
+    });
+  }
 
   let percent = $derived(
     processing.total > 0
@@ -59,6 +68,12 @@
     </div>
   {/if}
 
+  <div class="log-wrapper">
+  {#if processing.log.length > 0}
+    <button class="copy-btn" onclick={copyLog} title="Copy log to clipboard">
+      {copied ? "Copied!" : "Copy"}
+    </button>
+  {/if}
   <div
     class="log"
     bind:this={logContainer}
@@ -70,6 +85,7 @@
     {#if processing.log.length === 0}
       <div class="log-empty">Output will appear here...</div>
     {/if}
+  </div>
   </div>
 </div>
 
@@ -128,6 +144,31 @@
   .fail {
     color: var(--error);
   }
+  .log-wrapper {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  .copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 1;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    opacity: 0.6;
+    transition: opacity 0.15s;
+  }
+  .copy-btn:hover {
+    opacity: 1;
+  }
   .log {
     flex: 1;
     min-height: 0;
@@ -139,6 +180,8 @@
     font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
     font-size: 11px;
     line-height: 1.5;
+    user-select: text;
+    cursor: text;
   }
   .log-line {
     color: var(--text-secondary);

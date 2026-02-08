@@ -32,6 +32,7 @@ export const PROFILES = {
 export let paths = $state({
   inputDir: "",
   baseGameDir: "",
+  overlaysDir: "",
   outputDir: "",
   blenderPath: "",
 });
