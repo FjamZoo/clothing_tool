@@ -177,6 +177,10 @@ def main() -> None:
         "--no-green-fix", action="store_true",
         help="Disable green hair tint replacement",
     )
+    parser.add_argument(
+        "--overlays",
+        help="Path to face overlay directory (mp_fm_faov_*.ytd files)",
+    )
 
     args = parser.parse_args()
 
@@ -214,6 +218,7 @@ def main() -> None:
         output_size=args.output_size,
         webp_quality=args.webp_quality,
         green_hair_fix=not args.no_green_fix,
+        overlays_dir=args.overlays,
     )
 
 

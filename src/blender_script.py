@@ -522,6 +522,54 @@ def frame_camera(cam_obj: bpy.types.Object,
     cam_obj.rotation_euler = rot.to_euler()
 
 
+def frame_camera_portrait(cam_obj: bpy.types.Object,
+                          overlay_type: str = "") -> None:
+    """Position the camera for a face portrait (close-up).
+
+    Different framing per overlay type:
+      - eyebrow types: upper half of head (forehead area)
+      - beard: lower 2/3 of head (jaw/chin area)
+      - everything else: full face, slightly tighter
+    """
+    bbox = get_mesh_bounding_box()
+    if bbox is None:
+        return
+
+    bb_min, bb_max = bbox
+    center = (bb_min + bb_max) / 2
+    size = bb_max - bb_min
+
+    if overlay_type in ("eyebrowf", "eyebrowm"):
+        # Frame upper half of head (forehead area)
+        frame_center_z = center.z + size.z * 0.15
+        frame_height = size.z * 0.5
+    elif overlay_type == "beard":
+        # Frame lower 2/3 of head (jaw/chin area)
+        frame_center_z = center.z - size.z * 0.05
+        frame_height = size.z * 0.6
+    else:
+        # General face framing (makeup, blemish, etc.)
+        frame_center_z = center.z + size.z * 0.05
+        frame_height = size.z * 0.7
+
+    cam_obj.data.ortho_scale = max(size.x, frame_height) * 1.1
+
+    # Nearly straight-on, 3° elevation
+    elevation_rad = math.radians(3)
+    distance = max(size.y, 5)
+    cam_obj.location = Vector((
+        center.x,
+        center.y - distance * math.cos(elevation_rad),
+        frame_center_z + distance * math.sin(elevation_rad),
+    ))
+
+    # Point camera at the face center
+    face_center = Vector((center.x, center.y, frame_center_z))
+    direction = face_center - cam_obj.location
+    rot = direction.to_track_quat('-Z', 'Y')
+    cam_obj.rotation_euler = rot.to_euler()
+
+
 # ---------------------------------------------------------------------------
 # Main render loop
 # ---------------------------------------------------------------------------
@@ -621,7 +669,10 @@ def render_item(item: dict, cam_obj: bpy.types.Object,
         fix_alpha_modes()
 
         # Frame the camera on the imported mesh
-        frame_camera(cam_obj, elevation_deg=item.get("camera_elevation"))
+        if item.get("portrait_mode"):
+            frame_camera_portrait(cam_obj, overlay_type=item.get("overlay_type", ""))
+        else:
+            frame_camera(cam_obj, elevation_deg=item.get("camera_elevation"))
 
         # Render
         os.makedirs(os.path.dirname(output_path), exist_ok=True)

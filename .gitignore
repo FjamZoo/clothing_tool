@@ -6,6 +6,7 @@ __pycache__/
 stream/
 base_game/
 output/
+overlays/
 data/
 *.log
 NUL

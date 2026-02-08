@@ -663,6 +663,11 @@ def _worker_thread(
             "category": item.get("category", ""),
         }
 
+        # Portrait mode for face overlay rendering
+        if item.get("portrait_mode"):
+            blender_item["portrait_mode"] = True
+            blender_item["overlay_type"] = item.get("overlay_type", "")
+
         # Props: rotation
         category = item.get("category", "")
         if category.startswith("p_"):
@@ -796,71 +801,79 @@ def render_batch(
         # ==================================================================
         # Phase 1: Parallel DDS pre-extraction
         # ==================================================================
-        print(f"  Phase 1: Pre-extracting DDS for {len(items)} items...")
+        # Pre-composited items (e.g. face overlays) already have their
+        # textures ready — skip DDS extraction for them.
+        needs_extract = [i for i in items if not i.get("pre_composited")]
+        pre_composited = [i for i in items if i.get("pre_composited")]
 
-        dds_workers = min(os.cpu_count() or 4, len(items))
-        extracted_items: list[dict] = []
-        extract_fn = partial(_pre_extract_dds_single, tmp_dir=tmp_dir,
-                             green_hair_fix=green_hair_fix)
+        print(f"  Phase 1: Pre-extracting DDS for {len(needs_extract)} items"
+              f" ({len(pre_composited)} pre-composited)...")
 
-        with ProcessPoolExecutor(max_workers=dds_workers) as pool:
-            futures = {
-                pool.submit(extract_fn, item): item
-                for item in items
-            }
-            for future in as_completed(futures):
-                orig_item = futures[future]
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    # Entire extraction blew up
-                    all_results.append(RenderResult(
-                        catalog_key=orig_item["catalog_key"],
-                        output_png="",
-                        output_webp=orig_item["output_webp"],
-                        success=False,
-                        error=f"DDS pre-extract: {type(exc).__name__}: {exc}",
-                    ))
-                    continue
+        extracted_items: list[dict] = list(pre_composited)
 
-                # Handle placeholders immediately
-                if result.get("is_placeholder"):
-                    logger.debug("Placeholder texture for %s",
-                                 result["catalog_key"])
-                    output_webp = result["output_webp"]
-                    out_dir = os.path.dirname(output_webp)
-                    if out_dir:
-                        os.makedirs(out_dir, exist_ok=True)
-                    canvas = Image.new(
-                        "RGBA",
-                        (eff_output_size, eff_output_size),
-                        (0, 0, 0, 0),
-                    )
-                    canvas.save(
-                        output_webp, "WEBP",
-                        quality=eff_webp_quality,
-                        method=eff_webp_method,
-                    )
-                    all_results.append(RenderResult(
-                        catalog_key=result["catalog_key"],
-                        output_png="",
-                        output_webp=output_webp,
-                        success=True,
-                    ))
-                    continue
+        if needs_extract:
+            dds_workers = min(os.cpu_count() or 4, len(needs_extract))
+            extract_fn = partial(_pre_extract_dds_single, tmp_dir=tmp_dir,
+                                 green_hair_fix=green_hair_fix)
 
-                # Handle extraction errors
-                if result.get("pre_extract_error"):
-                    all_results.append(RenderResult(
-                        catalog_key=result["catalog_key"],
-                        output_png="",
-                        output_webp=result["output_webp"],
-                        success=False,
-                        error=result["pre_extract_error"],
-                    ))
-                    continue
+            with ProcessPoolExecutor(max_workers=dds_workers) as pool:
+                futures = {
+                    pool.submit(extract_fn, item): item
+                    for item in needs_extract
+                }
+                for future in as_completed(futures):
+                    orig_item = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        # Entire extraction blew up
+                        all_results.append(RenderResult(
+                            catalog_key=orig_item["catalog_key"],
+                            output_png="",
+                            output_webp=orig_item["output_webp"],
+                            success=False,
+                            error=f"DDS pre-extract: {type(exc).__name__}: {exc}",
+                        ))
+                        continue
 
-                extracted_items.append(result)
+                    # Handle placeholders immediately
+                    if result.get("is_placeholder"):
+                        logger.debug("Placeholder texture for %s",
+                                     result["catalog_key"])
+                        output_webp = result["output_webp"]
+                        out_dir = os.path.dirname(output_webp)
+                        if out_dir:
+                            os.makedirs(out_dir, exist_ok=True)
+                        canvas = Image.new(
+                            "RGBA",
+                            (eff_output_size, eff_output_size),
+                            (0, 0, 0, 0),
+                        )
+                        canvas.save(
+                            output_webp, "WEBP",
+                            quality=eff_webp_quality,
+                            method=eff_webp_method,
+                        )
+                        all_results.append(RenderResult(
+                            catalog_key=result["catalog_key"],
+                            output_png="",
+                            output_webp=output_webp,
+                            success=True,
+                        ))
+                        continue
+
+                    # Handle extraction errors
+                    if result.get("pre_extract_error"):
+                        all_results.append(RenderResult(
+                            catalog_key=result["catalog_key"],
+                            output_png="",
+                            output_webp=result["output_webp"],
+                            success=False,
+                            error=result["pre_extract_error"],
+                        ))
+                        continue
+
+                    extracted_items.append(result)
 
         placeholders = sum(1 for r in all_results if r.success)
         errors = sum(1 for r in all_results if not r.success)

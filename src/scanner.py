@@ -24,6 +24,8 @@ from src.filename_parser import parse_ytd_filename, parse_tattoo_filename, count
 from src.meta_parser import build_dlc_map
 from src.tattoo_parser import build_tattoo_meta
 from src.ydd_pairer import find_ydd_for_ytd, find_fallback_ydd, find_base_body_ydd
+from src.overlay_parser import discover_overlays, discover_replacement_overlays, merge_overlays
+from src.overlay_compositor import composite_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +298,7 @@ def scan_and_process(
     output_size: int = 0,
     webp_quality: int = 0,
     green_hair_fix: bool = True,
+    overlays_dir: str | None = None,
 ):
     """Main orchestration function.
 
@@ -692,7 +695,15 @@ def scan_and_process(
 
         return
 
-    if to_process == 0:
+    # Check if overlay phase will run (don't early-return if so).
+    # Note: blender_path may still be None here (auto-detected later),
+    # so only check render_3d, not blender_path.
+    _has_pending_overlays = bool(
+        render_3d and overlays_dir and base_game_dir
+        and (not categories or "overlay" in {c.lower() for c in categories})
+    )
+
+    if to_process == 0 and not _has_pending_overlays:
         print("\nNothing to process. All files are up to date.")
         if json_progress:
             _emit_json({"type": "done", "processed": 0, "failed": 0,
@@ -911,6 +922,133 @@ def scan_and_process(
                     print(f"  {pr['model']}: OK")
                 else:
                     print(f"  {pr['model']}: FAILED — {pr.get('error')}")
+
+    # --- Step 6c: Face overlay portrait renders ---
+    _run_overlays = render_3d and blender_path and overlays_dir and base_game_dir
+    if _run_overlays and categories:
+        if "overlay" not in {c.lower() for c in categories}:
+            _run_overlays = False
+    if _run_overlays:
+        overlay_infos = discover_overlays(Path(overlays_dir))
+        # Merge with replacement overlays from stream [replacements] dirs
+        rep_overlays = discover_replacement_overlays(Path(input_dir))
+        if rep_overlays:
+            print(f"  Found {len(rep_overlays)} replacement overlay(s) in stream packs")
+            overlay_infos = merge_overlays(overlay_infos, rep_overlays)
+        if overlay_infos:
+            print(f"\nRendering {len(overlay_infos)} face overlay portrait(s)...")
+            if json_progress:
+                _emit_json({"type": "phase", "phase": "face_overlays",
+                             "total": len(overlay_infos)})
+
+            import tempfile as _tmpmod
+            overlay_tmp = _tmpmod.mkdtemp(prefix="overlay_comp_")
+            overlay_render_items: list[dict] = []
+
+            try:
+                for ov in overlay_infos:
+                    # Pick base head based on gender.
+                    # Head 000 = first male heritage parent (Benjamin),
+                    # Head 021 = first female heritage parent (Hannah).
+                    if ov.gender == "female":
+                        head_ydd = os.path.join(base_game_dir, "base", "mp_f_freemode_01", "head_021_r.ydd")
+                        head_ytd = os.path.join(base_game_dir, "base", "mp_f_freemode_01", "head_diff_021_a_whi.ytd")
+                    else:
+                        head_ydd = os.path.join(base_game_dir, "base", "mp_m_freemode_01", "head_000_r.ydd")
+                        head_ytd = os.path.join(base_game_dir, "base", "mp_m_freemode_01", "head_diff_000_a_whi.ytd")
+
+                    # Output paths
+                    output_webp = os.path.join(
+                        output_dir, "textures", "overlays",
+                        ov.overlay_type, f"{ov.index:03d}.webp",
+                    )
+                    texture_rel = f"overlays/{ov.overlay_type}/{ov.index:03d}.webp"
+                    catalog_key = f"overlay_{ov.overlay_type}_{ov.index:03d}"
+
+                    # Skip if already exists (unless --force)
+                    if not force and os.path.isfile(output_webp):
+                        skipped_existing += 1
+                        continue
+
+                    # Pre-composite overlay onto base head texture
+                    comp_png = os.path.join(
+                        overlay_tmp, f"{ov.overlay_type}_{ov.index:03d}.png",
+                    )
+                    try:
+                        composite_overlay(
+                            ov.file_path,
+                            Path(head_ytd),
+                            Path(comp_png),
+                        )
+                    except Exception as exc:
+                        logger.warning("Overlay composite failed for %s: %s",
+                                       ov.file_path.name, exc)
+                        failed += 1
+                        continue
+
+                    overlay_render_items.append({
+                        "catalog_key": catalog_key,
+                        "ytd_path": str(ov.file_path),
+                        "ydd_path": head_ydd,
+                        "dds_files": [comp_png],
+                        "output_webp": output_webp,
+                        "texture_rel": texture_rel,
+                        "category": "head",
+                        "overlay_type": ov.overlay_type,
+                        "overlay_index": ov.index,
+                        "gender": ov.gender,
+                        "portrait_mode": True,
+                        "pre_composited": True,
+                    })
+
+                if overlay_render_items:
+                    from src.blender_renderer import render_batch, DEFAULT_PARALLEL_BLENDERS as _DFLTP
+                    overlay_results = render_batch(
+                        overlay_render_items, blender_path,
+                        parallel=min(_DFLTP, len(overlay_render_items)),
+                        render_size=render_size,
+                        taa_samples=taa_samples,
+                        output_size=output_size,
+                        webp_quality=webp_quality,
+                        green_hair_fix=False,
+                    )
+
+                    for rr in overlay_results:
+                        if rr.success:
+                            # Find matching item for catalog data
+                            match = next(
+                                (i for i in overlay_render_items
+                                 if i["catalog_key"] == rr.catalog_key),
+                                None,
+                            )
+                            if match:
+                                catalog.add_item(CatalogItem(
+                                    dlc_name="base",
+                                    gender=match["gender"],
+                                    category=match["overlay_type"],
+                                    drawable_id=match["overlay_index"],
+                                    texture_path=match["texture_rel"],
+                                    variants=0,
+                                    source_file=os.path.basename(match["ytd_path"]),
+                                    width=output_size or 512,
+                                    height=output_size or 512,
+                                    original_width=512,
+                                    original_height=512,
+                                    format_name="3D_RENDER",
+                                    render_type="3d",
+                                    item_type="overlay",
+                                ))
+                                processed += 1
+                        else:
+                            failed += 1
+                            logger.warning("Overlay render failed: %s — %s",
+                                           rr.catalog_key, rr.error)
+
+                    ok = sum(1 for r in overlay_results if r.success)
+                    print(f"  Face overlays: {ok}/{len(overlay_render_items)} rendered")
+            finally:
+                import shutil as _shutil
+                _shutil.rmtree(overlay_tmp, ignore_errors=True)
 
     # --- Pre-create all output directories (avoid per-file makedirs overhead) ---
     all_work = flat_items + tattoo_work_items
